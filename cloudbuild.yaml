@@ -1,0 +1,90 @@
+# nullplatform CI for Google Cloud Build.
+#
+# Contract:  np build start  ->  build the image  ->  np asset push  ->  np build update
+# There is no deploy step here: nullplatform triggers deployments itself.
+#
+# The only secret is NULLPLATFORM_API_KEY. Unlike Bitbucket Pipelines and
+# CircleCI, Cloud Build has no per-repository secret store — this template
+# expects a Secret Manager secret named "$REPO_NAME-nullplatform-api-key" in
+# the same GCP project as the build (Cloud Build resolves $REPO_NAME here
+# too, same as in the step below). Per-repo naming, not a single shared
+# "NULLPLATFORM_API_KEY" secret, because one GCP project commonly hosts
+# triggers for many apps' repos.
+#
+# Assumes a Bitbucket Cloud repository connected via a Cloud Build (2nd-gen)
+# trigger with:
+#   - a git_file_source pointing at this file
+#   - a repository_event_config for the connected Bitbucket Cloud repo
+#   - a user-managed service_account — the classic default Cloud Build SA
+#     (PROJECT_NUMBER@cloudbuild.gserviceaccount.com) is rejected for
+#     Connections-API (2nd-gen) triggers — granted roles/secretmanager.secretAccessor
+#     on this repo's $REPO_NAME-nullplatform-api-key secret
+#
+# $REPO_FULL_NAME / $BRANCH_NAME / $COMMIT_SHA below are real Cloud Build
+# substitutions: they're text-replaced with actual values before the step
+# ever runs. Cloud Build does NOT export them as container env vars, despite
+# what some docs imply — every OTHER $ is doubled ($$) on purpose, since
+# Cloud Build's substitution engine scans the whole file for $VAR / ${VAR},
+# not just its own built-ins, so an unescaped local shell variable like
+# $BUILD_ID would otherwise be rejected as "not a valid built-in
+# substitution". $$ renders as a literal $ that reaches the shell unprocessed.
+#
+# Runs under `sh`, not `bash` — the np-cli:kaniko image doesn't ship bash.
+
+steps:
+  - id: nullplatform-build
+    name: public.ecr.aws/nullplatform/np-cli:kaniko
+    entrypoint: sh
+    secretEnv: ['NULLPLATFORM_API_KEY']
+    args:
+      - -c
+      - |
+        set -e
+
+        REPOSITORY_URL="https://bitbucket.org/$REPO_FULL_NAME"
+        COMMIT_PERMALINK="$$REPOSITORY_URL/commits/$COMMIT_SHA"
+        DESCRIPTION="$$(git log -1 --pretty=%B)"
+
+        /np build start \
+          --repository "$$REPOSITORY_URL" \
+          --branch "$BRANCH_NAME" \
+          --commit-sha "$COMMIT_SHA" \
+          --commit-permalink "$$COMMIT_PERMALINK" \
+          --description "$$DESCRIPTION" \
+          --format json --query .id > /workspace/np_build_id
+
+        BUILD_ID="$$(cat /workspace/np_build_id)"
+
+        # Cloud Build has no built-in "always run this on failure" step, so this
+        # trap is the equivalent of bitbucket-pipelines.yml's after-script: only
+        # mark the build failed if `np build start` actually produced an id.
+        finish() {
+          exit_code=$$?
+          if [ "$$exit_code" -ne 0 ] && printf '%s' "$$BUILD_ID" | grep -Eq '^[0-9]+$'; then
+            /np build update --id "$$BUILD_ID" --repository "$$REPOSITORY_URL" --status=failed
+          fi
+          exit "$$exit_code"
+        }
+        trap finish EXIT
+
+        # kaniko requires a --destination even with --no-push; `foo:1` is a throwaway.
+        /kaniko/executor \
+          --context "$$(pwd)" \
+          --dockerfile "$$(pwd)/Dockerfile" \
+          --no-push \
+          --tarPath /workspace/image.tar \
+          --destination foo:1
+
+        /np asset push --type docker-image --source /workspace/image.tar \
+          --build-id "$$BUILD_ID" \
+          --repository "$$REPOSITORY_URL"
+
+        /np build update --id "$$BUILD_ID" --repository "$$REPOSITORY_URL" --status=successful
+
+availableSecrets:
+  secretManager:
+    - versionName: projects/$PROJECT_ID/secrets/$REPO_NAME-nullplatform-api-key/versions/latest
+      env: 'NULLPLATFORM_API_KEY'
+
+options:
+  logging: CLOUD_LOGGING_ONLY

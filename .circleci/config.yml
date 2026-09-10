@@ -1,0 +1,56 @@
+version: 2.1
+
+jobs:
+  build:
+    docker:
+      - image: cimg/base:2024.01
+    steps:
+      - checkout
+      - run:
+          name: Install nullplatform CLI
+          command: curl https://cli.nullplatform.com/install.sh | sh
+      - run:
+          name: Start nullplatform CI
+          command: |
+            REPOSITORY_URL="https://github.com/${CIRCLE_PROJECT_USERNAME}/${CIRCLE_PROJECT_REPONAME}"
+            COMMIT_PERMALINK="${REPOSITORY_URL}/commit/${CIRCLE_SHA1}"
+            DESCRIPTION="$(git log -1 --pretty=%B)"
+            np build start \
+              --repository "$REPOSITORY_URL" \
+              --branch "$CIRCLE_BRANCH" \
+              --commit-sha "$CIRCLE_SHA1" \
+              --commit-permalink "$COMMIT_PERMALINK" \
+              --description "$DESCRIPTION" \
+              --format json --query .id > /tmp/np_build_id
+            echo "Build ID: $(cat /tmp/np_build_id)"
+      - setup_remote_docker:
+          docker_layer_caching: false
+      - run:
+          name: Build asset
+          command: docker build -t main .
+      - run:
+          name: Push asset
+          command: |
+            REPOSITORY_URL="https://github.com/${CIRCLE_PROJECT_USERNAME}/${CIRCLE_PROJECT_REPONAME}"
+            np asset push --type docker-image --source main \
+              --build-id "$(cat /tmp/np_build_id)" \
+              --repository "$REPOSITORY_URL"
+      - run:
+          name: End nullplatform CI (success)
+          command: |
+            REPOSITORY_URL="https://github.com/${CIRCLE_PROJECT_USERNAME}/${CIRCLE_PROJECT_REPONAME}"
+            np build update --id "$(cat /tmp/np_build_id)" --repository "$REPOSITORY_URL" --status successful
+      - run:
+          name: End nullplatform CI (failure)
+          when: on_fail
+          command: |
+            REPOSITORY_URL="https://github.com/${CIRCLE_PROJECT_USERNAME}/${CIRCLE_PROJECT_REPONAME}"
+            np build update --id "$(cat /tmp/np_build_id)" --repository "$REPOSITORY_URL" --status failed
+
+workflows:
+  ci-nullplatform:
+    jobs:
+      - build:
+          filters:
+            branches:
+              only: main
