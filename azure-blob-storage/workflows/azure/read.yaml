@@ -1,0 +1,36 @@
+# Reports what the platform believes the current state to be, as action results.
+#
+# Touches nothing in Azure and needs no credential step: build_context only
+# derives names and paths from the notification payload, and this workflow
+# never runs tofu. The values reported are what nullplatform already holds in
+# the service attributes, not a live read of the Storage Account.
+steps:
+  - name: build context
+    type: script
+    file: $SERVICE_PATH/scripts/azure/build_context
+    output:
+      - name: STORAGE_ACCOUNT_NAME
+        type: environment
+      - name: RESOURCE_GROUP_NAME
+        type: environment
+      - name: LOCATION
+        type: environment
+
+  - name: read current state
+    type: script
+    script: |
+      #!/bin/bash
+      set -euo pipefail
+
+      RESULTS=$(jq -nc \
+        --arg account_name        "${STORAGE_ACCOUNT_NAME:-}" \
+        --arg resource_group_name "${RESOURCE_GROUP_NAME:-}" \
+        --arg location            "${LOCATION:-}" \
+        '{
+          account_name:        $account_name,
+          resource_group_name: $resource_group_name,
+          location:            $location
+        }')
+
+      echo "Reporting current state: $RESULTS"
+      np service action update --results "$RESULTS"

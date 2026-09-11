@@ -1,0 +1,47 @@
+{
+  "id": "1f2e3d4c-5b6a-7988-9a0b-c1d2e3f40506",
+  "source": "service",
+  "event": "service:action:create",
+  "created_at": "2026-09-04T12:00:00.000Z",
+  "notification": {
+    "action": "service:action:create",
+    "id": "aaaaaaaa-1111-2222-3333-444444444444",
+    "name": "create-azure-blob-storage",
+    "slug": "create-azure-blob-storage",
+    "status": "pending",
+    "type": "create",
+    "parameters": {
+      "account_tier": "Standard",
+      "replication_type": "ZRS",
+      "access_tier": "Hot",
+      "blob_versioning": true,
+      "soft_delete_days": 14,
+      "container_soft_delete_days": 30
+    },
+    "results": {},
+    "specification": {
+      "id": "bbbbbbbb-1111-2222-3333-444444444444",
+      "slug": "create-azure-blob-storage"
+    },
+    "service": {
+      "id": "9f8e7d6c-1234-4321-abcd-000000000000",
+      "name": "Media Assets",
+      "slug": "media-assets",
+      "nrn": "organization=11111111:account=2097086864:namespace=55555555",
+      "attributes": {},
+      "specification": {
+        "id": "cccccccc-1111-2222-3333-444444444444",
+        "slug": "azure-blob-storage"
+      },
+      "dimensions": {
+        "environment": "development"
+      }
+    },
+    "link": null,
+    "tags": {
+      "organization_id": "11111111",
+      "organization": "implementations"
+    },
+    "entity_nrn": "organization=11111111:account=2097086864:namespace=55555555"
+  }
+}

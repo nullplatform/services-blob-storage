@@ -1,0 +1,59 @@
+{
+  "id": "2a3b4c5d-6e7f-8091-a2b3-c4d5e6f70809",
+  "source": "service",
+  "event": "link:action:create",
+  "created_at": "2026-09-04T12:30:00.000Z",
+  "notification": {
+    "action": "link:action:create",
+    "id": "dddddddd-1111-2222-3333-444444444444",
+    "name": "create-connect",
+    "slug": "create-connect",
+    "status": "pending",
+    "type": "create",
+    "parameters": {
+      "container_name": "media-uploads",
+      "accessLevel": "read-write",
+      "sas_ttl_days": 30
+    },
+    "results": {},
+    "service": {
+      "id": "9f8e7d6c-1234-4321-abcd-000000000000",
+      "name": "Media Assets",
+      "slug": "media-assets",
+      "nrn": "organization=11111111:account=2097086864:namespace=55555555",
+      "attributes": {
+        "account_name": "mediaassets9f8e7d6c",
+        "primary_blob_endpoint": "https://mediaassets9f8e7d6c.blob.core.windows.net/",
+        "account_id": "/subscriptions/sub-1234/resourceGroups/rg-blob-test/providers/Microsoft.Storage/storageAccounts/mediaassets9f8e7d6c",
+        "resource_group_name": "rg-blob-test",
+        "account_tier": "Standard",
+        "replication_type": "ZRS"
+      },
+      "dimensions": {
+        "environment": "development"
+      }
+    },
+    "link": {
+      "id": "eeeeeeee-1111-2222-3333-444444444444",
+      "name": "blob-main",
+      "slug": "blob-main",
+      "attributes": {},
+      "scope": {
+        "id": "ffffffff-1111-2222-3333-444444444444",
+        "slug": "dev-scope",
+        "nrn": "organization=11111111:account=2097086864:namespace=55555555:application=777:scope=888"
+      },
+      "entity": {
+        "slug": "media-api",
+        "nrn": "organization=11111111:account=2097086864:namespace=55555555:application=777"
+      }
+    },
+    "tags": {
+      "organization_id": "11111111",
+      "organization": "implementations",
+      "application": "media-api",
+      "scope": "dev-scope"
+    },
+    "entity_nrn": "organization=11111111:account=2097086864:namespace=55555555:application=777"
+  }
+}

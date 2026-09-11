@@ -1,0 +1,92 @@
+#!/bin/bash
+set -euo pipefail
+
+# ---------------------------------------------------------------------------
+# write_service_outputs — Reads Terraform outputs from the deployment module
+# and writes them to the nullplatform service attributes.
+#
+# This step is what makes "export" work: attributes marked export:true in the
+# service spec (account_name, primary_blob_endpoint) become environment
+# variables in every linked application. Reporting outputs only as action
+# results — as services-azure-cosmos-db does — leaves attributes empty and
+# exports nothing.
+#
+# account_id and resource_group_name are stored with export:false: they are
+# internal, and build_permissions_context reads resource_group_name back
+# during link actions.
+#
+# No credential is ever written here. The account key and connection string
+# are deliberately not module outputs.
+# ---------------------------------------------------------------------------
+
+cd "$OUTPUT_DIR"
+
+SERVICE_ID=$(echo "$CONTEXT" | jq -r '.service.id')
+
+echo "Reading Terraform outputs for service ${SERVICE_ID}..."
+
+# do_tofu installs tofu into /tmp/np-tofu-bin in its OWN process when tofu is
+# not preinstalled; PATH is not a declared step output, so this step (a
+# separate process) would not see it otherwise. Prepending it here is what
+# makes the installer actually reachable downstream.
+if [ -d /tmp/np-tofu-bin ]; then
+  export PATH="/tmp/np-tofu-bin:$PATH"
+fi
+
+if ! command -v tofu >/dev/null 2>&1; then
+  echo "ERROR: tofu is not on PATH (checked /tmp/np-tofu-bin too)." >&2
+  echo "       Terraform outputs cannot be read, so service attributes were NOT patched." >&2
+  echo "       This is a failure, not a skip: the Storage Account may well exist in Azure," >&2
+  echo "       with nothing exported to applications and every later link failing." >&2
+  exit 1
+fi
+
+# Read every output in one call and fail loudly if the call itself fails —
+# for any reason OTHER than the individual output being absent, which is the
+# only case that may still warn-and-skip below. "tofu output -json" fails on
+# missing/corrupt state, backend errors, etc.; it does NOT fail merely because
+# a declared output has no value.
+if ! TOFU_OUTPUT_JSON=$(tofu output -json 2>&1); then
+  echo "ERROR: 'tofu output -json' failed. Service attributes were NOT patched:" >&2
+  echo "$TOFU_OUTPUT_JSON" >&2
+  exit 1
+fi
+
+ACCOUNT_NAME=$(printf '%s' "$TOFU_OUTPUT_JSON" | jq -r '.account_name.value // ""')
+BLOB_ENDPOINT=$(printf '%s' "$TOFU_OUTPUT_JSON" | jq -r '.primary_blob_endpoint.value // ""')
+ACCOUNT_ID=$(printf '%s' "$TOFU_OUTPUT_JSON" | jq -r '.account_id.value // ""')
+RESOURCE_GROUP=$(printf '%s' "$TOFU_OUTPUT_JSON" | jq -r '.resource_group_name.value // ""')
+
+if [ -z "$ACCOUNT_NAME" ]; then
+  echo "WARNING: no account_name output found. Skipping attribute update."
+  exit 0
+fi
+
+# account_name is the load-bearing attribute: build_context reads it back on
+# every later action, so it is always patched once present. The others are
+# genuinely optional pieces of the same picture — patch what is present and
+# say which were empty, rather than silently overwriting a previously-good
+# value (e.g. resource_group_name from a prior run) with an empty string.
+EMPTY_OUTPUTS=""
+[ -z "$BLOB_ENDPOINT" ]  && EMPTY_OUTPUTS="$EMPTY_OUTPUTS primary_blob_endpoint"
+[ -z "$ACCOUNT_ID" ]     && EMPTY_OUTPUTS="$EMPTY_OUTPUTS account_id"
+[ -z "$RESOURCE_GROUP" ] && EMPTY_OUTPUTS="$EMPTY_OUTPUTS resource_group_name"
+if [ -n "$EMPTY_OUTPUTS" ]; then
+  echo "WARNING: the following outputs were empty and will not be patched:${EMPTY_OUTPUTS}"
+fi
+
+ATTRS=$(jq -nc \
+  --arg account_name          "$ACCOUNT_NAME" \
+  --arg primary_blob_endpoint "$BLOB_ENDPOINT" \
+  --arg account_id            "$ACCOUNT_ID" \
+  --arg resource_group_name   "$RESOURCE_GROUP" \
+  '{account_name: $account_name}
+   + (if $primary_blob_endpoint != "" then {primary_blob_endpoint: $primary_blob_endpoint} else {} end)
+   + (if $account_id            != "" then {account_id: $account_id}                       else {} end)
+   + (if $resource_group_name   != "" then {resource_group_name: $resource_group_name}     else {} end)')
+
+echo "Updating service ${SERVICE_ID} attributes:"
+echo "$ATTRS" | jq -r 'to_entries[] | "  \(.key): \(.value)"'
+
+np service patch --id "$SERVICE_ID" --body "{\"attributes\": $ATTRS}"
+echo "Service attributes updated successfully."

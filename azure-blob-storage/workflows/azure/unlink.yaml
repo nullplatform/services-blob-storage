@@ -1,0 +1,24 @@
+# Destroys the link's blob container.
+#
+# DESTRUCTIVE: the container and every blob in it are deleted. The account's
+# container_delete_retention_policy (container_soft_delete_days, default 7)
+# is the recovery window for an accidental unlink.
+#
+# Deleting the container is also what makes revocation effective: an Azure SAS
+# cannot be revoked individually — only rotating the account key invalidates
+# one, which would break every other link at once — so the token is left
+# pointing at a container that no longer exists.
+#
+# The link's state lives under its own key inside the service's tfstate
+# container, so this destroy cannot touch the Storage Account's own state.
+# No TOFU_TARGETS filtering is needed.
+include:
+  - "$SERVICE_PATH/workflows/azure/link.yaml"
+
+steps:
+  - name: tofu
+    type: script
+    file: $SERVICE_PATH/scripts/azure/do_tofu
+    action: replace
+    configuration:
+      TOFU_ACTION: destroy

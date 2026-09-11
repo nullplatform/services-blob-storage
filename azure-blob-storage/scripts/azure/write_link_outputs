@@ -1,0 +1,86 @@
+#!/bin/bash
+set -euo pipefail
+
+# ---------------------------------------------------------------------------
+# write_link_outputs — Reads Terraform outputs from the permissions module
+# and writes them to the nullplatform link attributes.
+#
+# container_name is exported plainly; sas_token is exported with
+# export: {secret: true}, so nullplatform stores it encrypted, returns null
+# for it from the API, and injects it into the app at runtime.
+#
+# Only these two attributes are patched. account_name and
+# primary_blob_endpoint belong to the SERVICE spec: service and link
+# attributes share a single env-var namespace per link
+# ({LINK_SLUG}_{ATTRIBUTE}), so patching them here too would collide.
+# ---------------------------------------------------------------------------
+
+# NP_SKIP_TOFU is set by build_permissions_context when an unlink arrives for
+# a link that never finished creating. do_tofu already no-oped, so there is no
+# tofu state to read here at all — and OUTPUT_DIR at this point still holds
+# whatever build_context (the SERVICE's context, two steps back) set it to,
+# not a link directory, so this must return before touching it.
+if [ "${NP_SKIP_TOFU:-false}" = "true" ]; then
+  echo "NP_SKIP_TOFU=true — nothing to do (the link never finished creating). Skipping link attribute update."
+  exit 0
+fi
+
+cd "$OUTPUT_DIR"
+
+LINK_ID_VAL=$(echo "$CONTEXT" | jq -r '.link.id')
+
+echo "Reading Terraform outputs for link ${LINK_ID_VAL}..."
+
+# do_tofu installs tofu into /tmp/np-tofu-bin in its OWN process when tofu is
+# not preinstalled; PATH is not a declared step output, so this step (a
+# separate process) would not see it otherwise. Prepending it here is what
+# makes the installer actually reachable downstream.
+if [ -d /tmp/np-tofu-bin ]; then
+  export PATH="/tmp/np-tofu-bin:$PATH"
+fi
+
+if ! command -v tofu >/dev/null 2>&1; then
+  echo "ERROR: tofu is not on PATH (checked /tmp/np-tofu-bin too)." >&2
+  echo "       Terraform outputs cannot be read, so link attributes were NOT patched." >&2
+  echo "       This is a failure, not a skip: the container may well exist in Azure." >&2
+  exit 1
+fi
+
+# Read every output in one call and fail loudly if the call itself fails —
+# for any reason OTHER than the individual output being absent, which is the
+# only case that may still warn-and-skip below. "tofu output -json" fails on
+# missing/corrupt state, backend errors, etc.; it does NOT fail merely because
+# a declared output has no value.
+if ! TOFU_OUTPUT_JSON=$(tofu output -json 2>&1); then
+  echo "ERROR: 'tofu output -json' failed. Link attributes were NOT patched:" >&2
+  echo "$TOFU_OUTPUT_JSON" >&2
+  exit 1
+fi
+
+CONTAINER_NAME=$(printf '%s' "$TOFU_OUTPUT_JSON" | jq -r '.container_name.value // ""')
+SAS_TOKEN=$(printf '%s' "$TOFU_OUTPUT_JSON" | jq -r '.sas_token.value // ""')
+
+if [ -z "$CONTAINER_NAME" ]; then
+  echo "WARNING: no container_name output found. Skipping link attribute update."
+  exit 0
+fi
+
+if [ -z "$SAS_TOKEN" ]; then
+  echo "WARNING: sas_token output was empty; patching container_name only."
+  ATTRS=$(jq -nc --arg container_name "$CONTAINER_NAME" '{container_name: $container_name}')
+else
+  ATTRS=$(jq -nc \
+    --arg container_name "$CONTAINER_NAME" \
+    --arg sas_token      "$SAS_TOKEN" \
+    '{
+      container_name: $container_name,
+      sas_token:      $sas_token
+    }')
+fi
+
+echo "Updating link ${LINK_ID_VAL} attributes:"
+echo "  container_name: ${CONTAINER_NAME}"
+echo "  sas_token:      ****"
+
+np link patch --id "$LINK_ID_VAL" --body "{\"attributes\": $ATTRS}"
+echo "Link attributes updated successfully."
