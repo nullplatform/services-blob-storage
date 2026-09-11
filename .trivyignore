@@ -1,0 +1,18 @@
+# Trivy misconfiguration suppressions for this repo (intentional, documented).
+
+# AVD-DS-0002 — the worker image builds on the shared worker-bridge base,
+# which runs as root by design today (same as aws-s3-bucket): the runtime user
+# is governed by the agent's worker pod securityContext, not by a USER
+# directive here. Revisit when the bridge ships a non-root variant.
+AVD-DS-0002
+
+# The deployment module creates the account with
+# public_network_access_enabled = true and a network rule whose default_action
+# is "Allow" (bypass: AzureServices). That is a documented product decision —
+# see "The account is reachable from the public internet" in
+# azure-blob-storage/README.md — not an oversight: private endpoints and
+# network ACLs are out of scope for this version, and access still requires a
+# valid SAS with public blob access disabled.
+#
+# Add the AVD ID here once a scan reports it. A guessed ID suppresses nothing
+# and reads as though a real finding was reviewed.

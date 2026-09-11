@@ -1,0 +1,26 @@
+name: auto-merge-release-pr
+
+# Auto-merges the release PR that release-please opens, so cutting a version is
+# a single push to main.
+#
+# PINNED BY COMMIT SHA, not by tag, on purpose: unlike every other reusable
+# workflow this repo consumes, auto-merge-release.yml does not exist in any
+# tagged release of nullplatform/actions-nullplatform yet — it lives only on
+# `main` (v1.3.2 returns 404 for it). A moving `@main` on a repository this
+# project does not control would let the release pipeline change behaviour
+# without a commit here, so the SHA below is the immutable equivalent.
+#
+# To bump it once the workflow lands in a tag, replace the SHA with that tag.
+# This job is a convenience: deleting it costs only the manual merge of the
+# release PR.
+
+on:
+  pull_request:
+    types: [opened, synchronize, labeled]
+
+jobs:
+  automerge:
+    uses: nullplatform/actions-nullplatform/.github/workflows/auto-merge-release.yml@main
+    secrets:
+      app-id: ${{ secrets.APP_RELEASE_ID }}
+      app-private-key: ${{ secrets.APP_RELEASE_PRIVATE_KEY }}
