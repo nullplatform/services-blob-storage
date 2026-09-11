@@ -1,0 +1,60 @@
+#!/bin/bash
+set -euo pipefail
+
+# ---------------------------------------------------------------------------
+# storage_account_name — Derives a valid Azure Storage Account name.
+#
+# Azure's constraint is the harshest in the platform: 3-24 characters,
+# lowercase alphanumeric ONLY (no hyphens), and globally unique across all of
+# Azure. The generic sanitize_name() from np-service-workflows emits
+# "np-<name>" with hyphens and a 63-char cap, which is invalid here.
+#
+# Usage: storage_account_name <raw_name> <service_id>
+#
+# The service-id suffix is always preserved: when the name is too long the
+# BASE is truncated, never the suffix, so uniqueness survives truncation.
+# ---------------------------------------------------------------------------
+
+RAW_NAME="${1:-}"
+SERVICE_ID="${2:-}"
+
+if [ -z "$SERVICE_ID" ]; then
+  echo "ERROR: storage_account_name requires <raw_name> <service_id>" >&2
+  exit 1
+fi
+
+MAX_LEN=24
+FALLBACK_BASE="npblob"
+
+# Keep only lowercase alphanumerics — everything else is invalid for Azure.
+sanitize() {
+  printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9'
+}
+
+SUFFIX=$(sanitize "$SERVICE_ID" | cut -c1-8)
+
+if [ -z "$SUFFIX" ]; then
+  echo "ERROR: service_id '${SERVICE_ID}' contains no alphanumeric characters" >&2
+  exit 1
+fi
+
+BASE=$(sanitize "$RAW_NAME")
+
+# .service.name may be absent or sanitize to nothing — the skills mandate a
+# fallback so the name is never just the prefix.
+if [ -z "$BASE" ]; then
+  BASE="$FALLBACK_BASE"
+fi
+
+AVAILABLE=$((MAX_LEN - ${#SUFFIX}))
+BASE=$(printf '%s' "$BASE" | cut -c1-"$AVAILABLE")
+
+NAME="${BASE}${SUFFIX}"
+
+if [[ ! "$NAME" =~ ^[a-z0-9]{3,24}$ ]]; then
+  echo "ERROR: computed storage account name '${NAME}' is not a valid Azure Storage Account name" >&2
+  echo "       (required: 3-24 lowercase alphanumeric characters)" >&2
+  exit 1
+fi
+
+printf '%s\n' "$NAME"

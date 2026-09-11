@@ -1,0 +1,56 @@
+# Provisions the Storage Account for a service instance, then writes the
+# resulting account name and endpoint back to the service attributes so linked
+# apps can consume them as environment variables.
+provider_categories:
+  - cloud-providers
+
+steps:
+  - name: resolve azure credentials
+    type: script
+    file: $SERVICE_PATH/scripts/azure/resolve_azure_credentials
+    output:
+      - name: ARM_SUBSCRIPTION_ID
+        type: environment
+      - name: ARM_CLIENT_ID
+        type: environment
+      - name: ARM_TENANT_ID
+        type: environment
+      # Propagated like aws-s3-bucket propagates AWS_SECRET_ACCESS_KEY. Empty
+      # when the agent uses a managed identity.
+      - name: ARM_CLIENT_SECRET
+        type: environment
+
+  - name: build context
+    type: script
+    file: $SERVICE_PATH/scripts/azure/build_context
+    output:
+      - name: OUTPUT_DIR
+        type: environment
+      - name: TOFU_MODULE_DIR
+        type: environment
+      - name: TOFU_INIT_VARIABLES
+        type: environment
+      - name: TOFU_VARIABLES
+        type: environment
+      - name: STORAGE_ACCOUNT_NAME
+        type: environment
+      - name: RESOURCE_GROUP_NAME
+        type: environment
+      - name: LOCATION
+        type: environment
+      - name: TFSTATE_CONTAINER
+        type: environment
+      - name: TFSTATE_STORAGE_ACCOUNT
+        type: environment
+      - name: TFSTATE_RESOURCE_GROUP
+        type: environment
+
+  - name: tofu
+    type: script
+    file: $SERVICE_PATH/scripts/azure/do_tofu
+    configuration:
+      TOFU_ACTION: apply
+
+  - name: write service outputs
+    type: script
+    file: $SERVICE_PATH/scripts/azure/write_service_outputs

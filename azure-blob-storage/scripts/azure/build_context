@@ -1,0 +1,346 @@
+#!/bin/bash
+set -euo pipefail
+
+# ---------------------------------------------------------------------------
+# build_context — Turns the nullplatform notification into a Terraform
+# execution environment for service actions (create / update / delete / read).
+#
+# On link actions it additionally exports the LINK_* variables that
+# build_permissions_context consumes in the next workflow step.
+#
+# This script CREATES NOTHING in Azure and shells out to no cloud CLI. It only
+# derives names and paths. The tfstate container is required to exist already
+# (see the "tfstate location" section below), which is what makes every action
+# — `read` included — safe to run with no Azure session.
+#
+# It had a bootstrap step once, gated by NP_DRY_RUN / NP_SKIP_TFSTATE_BOOTSTRAP.
+# Both are gone: nothing here reads either variable any more. read.yaml no
+# longer needs to opt out of anything.
+# ---------------------------------------------------------------------------
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=/dev/null
+source "$SCRIPT_DIR/resolve_placement_lib"
+
+# Each script needs its own copy — shell functions do not carry across steps.
+# CRITICAL: $VALUES is a FILE PATH, not JSON content.
+yaml_value() {
+  local key="$1" default="$2" file="$3"
+  local raw val
+  raw=$(grep "^${key}:" "$file" 2>/dev/null | head -1) || true
+  if [ -z "$raw" ]; then
+    echo "$default"
+    return 0
+  fi
+
+  val="${raw#*:}"
+  # Trim leading whitespace.
+  val="${val#"${val%%[![:space:]]*}"}"
+
+  # A quoted value ends at its closing quote; anything after it (typically an
+  # inline comment) is not part of the value. An unquoted value ends at the
+  # first "#".
+  #
+  # The previous version stripped only a leading and a trailing quote, so
+  #   tfstate_resource_group: ""   # empty = resource_group_name
+  # came back as the non-empty string '"   # empty = resource_group_name',
+  # which then beat every other resolution tier and was written verbatim into
+  # backend.hcl. HCL read it as an empty string plus a comment, and tofu hung
+  # resolving a storage account with no resource group.
+  case "$val" in
+    '"'*) val="${val#\"}"; val="${val%%\"*}" ;;
+    "'"*) val="${val#\'}"; val="${val%%\'*}" ;;
+    *)
+      val="${val%%#*}"
+      val="${val%"${val##*[![:space:]]}"}"
+      ;;
+  esac
+
+  echo "${val:-$default}"
+}
+
+# --- Service identity -------------------------------------------------------
+
+SERVICE_ID=$(echo "$CONTEXT" | jq -r '.service.id')
+SERVICE_NAME=$(echo "$CONTEXT" | jq -r '.service.name // ""')
+
+if [ -z "$SERVICE_ID" ] || [ "$SERVICE_ID" = "null" ]; then
+  echo "ERROR: .service.id is missing from the notification context" >&2
+  exit 1
+fi
+
+# --- Merge stored attributes with this action's parameters ------------------
+# CRITICAL: on the first "create", .service.attributes is empty or incomplete;
+# user-supplied values arrive in .parameters. jq's * merges objects with the
+# right-hand side winning, so parameters always take precedence.
+
+SERVICE_ATTRS=$(echo "$CONTEXT" | jq -c '(.service.attributes // {}) * (.parameters // {})')
+
+# --- Storage Account name must be STABLE once created -----------------------
+# account_name is editableOn: [] in the spec, so it never legitimately arrives
+# via .parameters — reading it from the merged attributes is equivalent to
+# reading it from .service.attributes directly, and keeps this in one place.
+#
+# CRITICAL: a previously stored account_name always wins. Recomputing the name
+# from .service.name on every action means renaming the service instance in
+# nullplatform computes a different name on the next "update" — and "name"
+# forces replacement on azurerm_storage_account, destroying the account and
+# every byte in it. Azure Storage Account names are 3-24 lowercase
+# alphanumerics, no hyphens, globally unique; the generic sanitize_name()
+# cannot produce one, so the fallback path uses this service's own sanitiser,
+# but only when no name has been stored yet (i.e. on the very first create).
+STORED_ACCOUNT_NAME=$(echo "$SERVICE_ATTRS" | jq -r '.account_name // ""')
+
+if [ -n "$STORED_ACCOUNT_NAME" ]; then
+  STORAGE_ACCOUNT_NAME="$STORED_ACCOUNT_NAME"
+else
+  STORAGE_ACCOUNT_NAME=$("$SCRIPT_DIR/storage_account_name" "$SERVICE_NAME" "$SERVICE_ID")
+fi
+
+# Validate whichever value is used, not just the freshly-computed one: a
+# stored attribute could in principle be corrupted or hand-edited.
+if [[ ! "$STORAGE_ACCOUNT_NAME" =~ ^[a-z0-9]{3,24}$ ]]; then
+  echo "ERROR: storage account name '${STORAGE_ACCOUNT_NAME}' is not a valid Azure Storage Account name" >&2
+  echo "       (required: 3-24 lowercase alphanumeric characters)" >&2
+  exit 1
+fi
+
+ACCOUNT_TIER=$(echo "$SERVICE_ATTRS"      | jq -r '.account_tier               // "Standard"')
+REPLICATION_TYPE=$(echo "$SERVICE_ATTRS"  | jq -r '.replication_type           // "LRS"')
+ACCESS_TIER=$(echo "$SERVICE_ATTRS"       | jq -r '.access_tier                // "Hot"')
+BLOB_VERSIONING=$(echo "$SERVICE_ATTRS"   | jq -r '.blob_versioning            // false')
+SOFT_DELETE_DAYS=$(echo "$SERVICE_ATTRS"  | jq -r '.soft_delete_days           // 7')
+CONTAINER_SOFT_DELETE_DAYS=$(echo "$SERVICE_ATTRS" | jq -r '.container_soft_delete_days // 7')
+
+# --- Validate ---------------------------------------------------------------
+# These come from an authenticated API caller but are still user input. The
+# module repeats the same rules in validation{} blocks so a hand-run
+# "tofu plan" enforces them too.
+
+if [[ ! "$ACCOUNT_TIER" =~ ^(Standard|Premium)$ ]]; then
+  echo "ERROR: invalid account_tier '${ACCOUNT_TIER}' (expected Standard or Premium)" >&2
+  exit 1
+fi
+
+if [[ ! "$REPLICATION_TYPE" =~ ^(LRS|ZRS|GRS|RAGRS|GZRS)$ ]]; then
+  echo "ERROR: invalid replication_type '${REPLICATION_TYPE}' (expected LRS, ZRS, GRS, RAGRS or GZRS)" >&2
+  exit 1
+fi
+
+if [[ ! "$ACCESS_TIER" =~ ^(Hot|Cool)$ ]]; then
+  echo "ERROR: invalid access_tier '${ACCESS_TIER}' (expected Hot or Cool)" >&2
+  exit 1
+fi
+
+if [[ ! "$BLOB_VERSIONING" =~ ^(true|false)$ ]]; then
+  echo "ERROR: invalid blob_versioning '${BLOB_VERSIONING}' (expected true or false)" >&2
+  exit 1
+fi
+
+for pair in "soft_delete_days:${SOFT_DELETE_DAYS}" "container_soft_delete_days:${CONTAINER_SOFT_DELETE_DAYS}"; do
+  _key="${pair%%:*}"
+  _val="${pair#*:}"
+  if [[ ! "$_val" =~ ^[0-9]+$ ]] || [ "$_val" -gt 365 ]; then
+    echo "ERROR: invalid ${_key} '${_val}' (expected an integer between 0 and 365)" >&2
+    exit 1
+  fi
+done
+
+# --- Azure placement -------------------------------------------------------
+# Three tiers, resolved per field: values.yaml -> cloud-providers provider ->
+# agent environment. See resolve_placement_lib for why, and for the shape of
+# the provider's `services` block.
+#
+# values.yaml deliberately outranks the rest: the agent inherits every variable
+# from the process that launched it, and an ambient value could silently point
+# this service at the wrong resource group.
+
+V_RG=$(yaml_value "resource_group_name" "" "$VALUES")
+V_LOC=$(yaml_value "location" "" "$VALUES")
+V_TF_SA=$(yaml_value "tfstate_storage_account" "" "$VALUES")
+V_TF_RG=$(yaml_value "tfstate_resource_group" "" "$VALUES")
+V_TF_CT=$(yaml_value "tfstate_container" "" "$VALUES")
+
+# The provider is read for placement only; credentials are resolved by
+# resolve_azure_credentials in its own step. read.yaml has no credential step
+# and still needs placement, which is why this lookup lives here and not there.
+# A failure is not fatal: the values.yaml and environment tiers still apply.
+PLACEMENT_NRN=$(echo "${CONTEXT:-}" | jq -r '.service.nrn // .link.scope.nrn // .entity_nrn // ""' 2>/dev/null) || PLACEMENT_NRN=""
+
+PROVIDER_ATTRS='{}'
+if [ -n "$PLACEMENT_NRN" ]; then
+  # NOTE: --limit is incompatible with --categories (np rejects it). Do not add it.
+  PROVIDER_ATTRS=$(np provider list \
+    --nrn "$PLACEMENT_NRN" \
+    --categories cloud-providers \
+    --format json 2>/dev/null \
+    | jq -c '(.results // [])[0].attributes // {}' 2>/dev/null) || PROVIDER_ATTRS='{}'
+  [ -z "$PROVIDER_ATTRS" ] && PROVIDER_ATTRS='{}'
+fi
+
+RESOURCE_GROUP_NAME=$(placement_resource_group "$PROVIDER_ATTRS" "$V_RG")
+LOCATION=$(placement_location "$PROVIDER_ATTRS" "$V_LOC")
+TFSTATE_STORAGE_ACCOUNT=$(placement_tfstate_storage_account "$PROVIDER_ATTRS" "$V_TF_SA")
+TFSTATE_CONTAINER=$(placement_tfstate_container "$PROVIDER_ATTRS" "$V_TF_CT")
+TFSTATE_RESOURCE_GROUP=$(placement_tfstate_resource_group "$PROVIDER_ATTRS" "$V_TF_RG" "$RESOURCE_GROUP_NAME")
+
+if [ -z "$RESOURCE_GROUP_NAME" ]; then
+  echo "ERROR: resource_group_name is not set." >&2
+  echo "       Resolved from, in order: values.yaml, the cloud-providers provider" >&2
+  echo "       (.services.resource_group_name), \$SERVICES_RESOURCE_GROUP, \$RESOURCE_GROUP." >&2
+  echo "       A nullplatform Azure agent normally supplies \$RESOURCE_GROUP already." >&2
+  exit 1
+fi
+
+if [ -z "$TFSTATE_STORAGE_ACCOUNT" ]; then
+  echo "ERROR: tfstate_storage_account is not set." >&2
+  echo "       Resolved from, in order: values.yaml, the cloud-providers provider" >&2
+  echo "       (.services.tfstate.storage_account), \$AZURE_TFSTATE_STORAGE_ACCOUNT." >&2
+  exit 1
+fi
+
+# LOCATION is deliberately allowed to be empty: the deployment module falls
+# back to the target resource group's own location via a data source, so the
+# common single-region setup needs no location configured anywhere.
+echo "Azure placement: resource_group=${RESOURCE_GROUP_NAME} location=${LOCATION:-<resource group default>}"
+echo "   resource_group: $(placement_source "$V_RG" "$(provider_field "$PROVIDER_ATTRS" services.resource_group_name)" "$(first_non_empty "${SERVICES_RESOURCE_GROUP:-}" "${RESOURCE_GROUP:-}")")"
+echo "   location:       $(placement_source "$V_LOC" "$(provider_field "$PROVIDER_ATTRS" services.location)" "${SERVICES_LOCATION:-}")"
+echo "Storage Account name: ${STORAGE_ACCOUNT_NAME}"
+
+# --- tfstate location -------------------------------------------------------
+# A SHARED container with a per-service KEY, not a container per service, and
+# not a container this service creates.
+#
+# The reference aws-s3-bucket service creates its own per-service tfstate
+# bucket at runtime (`aws s3api create-bucket`), so an AWS install needs no
+# state configuration at all. Azure cannot copy that cheaply: storage account
+# names are globally unique and slow to create, so an account per service is
+# both fragile and expensive, and creating one needs a management-plane call
+# this step deliberately does not make.
+#
+# So the state location is configuration. It is resolved through the same three
+# tiers as the rest of the placement — values.yaml, the provider, the
+# environment — which is what keeps it OUT of a hand-edited file in this repo
+# for a customer who publishes it on their cloud-providers config.
+#
+# The environment tier is not theoretical here. tofu-modules' nullplatform/agent
+# has no tfstate variables of its own — it emits RESOURCE_GROUP and
+# AZURE_SUBSCRIPTION_ID/CLIENT_ID/TENANT_ID/CLIENT_SECRET (verified at v7.7.0)
+# — but the reference Azure install provisions a storage account and container
+# for exactly this purpose and passes them through the agent's `extra_envs` as
+# AZURE_TFSTATE_STORAGE_ACCOUNT / AZURE_TFSTATE_CONTAINER /
+# AZURE_TFSTATE_RESOURCE_GROUP. On such a cluster this service needs no tfstate
+# configuration at all.
+#
+# Nothing here creates anything. Keys stay collision-free because SERVICE_ID is
+# unique, and the link states nest under the same prefix.
+
+if [ -z "$TFSTATE_CONTAINER" ]; then
+  echo "ERROR: tfstate_container is not set." >&2
+  echo "       Resolved from, in order: values.yaml, the cloud-providers provider" >&2
+  echo "       (.services.tfstate.container), \$AZURE_TFSTATE_CONTAINER." >&2
+  echo "       It must name an EXISTING blob container; this service never creates one." >&2
+  exit 1
+fi
+
+TFSTATE_KEY="azure-blob-storage/${SERVICE_ID}/deployment.tfstate"
+
+echo "tfstate: ${TFSTATE_STORAGE_ACCOUNT}/${TFSTATE_CONTAINER}/${TFSTATE_KEY}"
+
+# --- Terraform execution environment ---------------------------------------
+
+OUTPUT_DIR="/tmp/np-service-${SERVICE_ID}"
+mkdir -p "$OUTPUT_DIR"
+
+TOFU_MODULE_DIR="$SERVICE_PATH/deployment"
+
+# use_azuread_auth=true: the azurerm backend defaults to shared-key auth and
+# resolves the account key via ARM listKeys, which the README's documented
+# Storage Blob Data Contributor role does not grant on the tfstate account.
+# This makes the backend actually authenticate the way the README describes.
+# The backend settings go in a FILE, not in a string of -backend-config flags.
+#
+# Same reasoning that already applies to TOFU_VARIABLES a few lines down: a
+# flag string has to survive the workflow engine's environment channel intact
+# and then be word-split back into argv. Anything that adds a quote, collapses
+# a space or wraps the value turns a flag into a positional argument, and tofu
+# answers with "Unexpected argument / Too many command line arguments" — an
+# error that says nothing about where the string was damaged.
+#
+# do_tofu builds the single -backend-config flag itself from this file, so no
+# part of the init command line travels through the environment.
+cat > "${OUTPUT_DIR}/backend.hcl" <<EOF
+resource_group_name  = "${TFSTATE_RESOURCE_GROUP}"
+storage_account_name = "${TFSTATE_STORAGE_ACCOUNT}"
+container_name       = "${TFSTATE_CONTAINER}"
+key                  = "${TFSTATE_KEY}"
+use_azuread_auth     = true
+EOF
+
+TOFU_INIT_VARIABLES=""
+
+TAGS=$(echo "$CONTEXT" | jq -c '.tags // {} | with_entries(.value |= tostring)')
+
+TOFU_VARIABLES=$(jq -nc \
+  --arg     service_id                 "$SERVICE_ID" \
+  --arg     storage_account_name       "$STORAGE_ACCOUNT_NAME" \
+  --arg     resource_group_name        "$RESOURCE_GROUP_NAME" \
+  --arg     location                   "$LOCATION" \
+  --arg     account_tier               "$ACCOUNT_TIER" \
+  --arg     replication_type           "$REPLICATION_TYPE" \
+  --arg     access_tier                "$ACCESS_TIER" \
+  --argjson blob_versioning            "$BLOB_VERSIONING" \
+  --argjson soft_delete_days           "$SOFT_DELETE_DAYS" \
+  --argjson container_soft_delete_days "$CONTAINER_SOFT_DELETE_DAYS" \
+  --argjson tags                       "$TAGS" \
+  '{
+    service_id:                 $service_id,
+    storage_account_name:       $storage_account_name,
+    resource_group_name:        $resource_group_name,
+    location:                   $location,
+    account_tier:               $account_tier,
+    replication_type:           $replication_type,
+    access_tier:                $access_tier,
+    blob_versioning:            $blob_versioning,
+    soft_delete_days:           $soft_delete_days,
+    container_soft_delete_days: $container_soft_delete_days,
+    tags:                       $tags
+  }')
+
+export SERVICE_ID SERVICE_NAME STORAGE_ACCOUNT_NAME
+export RESOURCE_GROUP_NAME LOCATION
+export TFSTATE_STORAGE_ACCOUNT TFSTATE_RESOURCE_GROUP TFSTATE_CONTAINER TFSTATE_KEY
+export OUTPUT_DIR TOFU_MODULE_DIR TOFU_INIT_VARIABLES TOFU_VARIABLES
+
+# --- Link context (link workflows only) ------------------------------------
+# Consumed by build_permissions_context in the next step. Every field comes
+# from the notification payload; never call the API to resolve slugs or NRNs.
+
+if [ "${ACTION_SOURCE:-}" = "link" ]; then
+  LINK_ID=$(echo "$CONTEXT"   | jq -r '.link.id        // ""')
+  LINK_NAME=$(echo "$CONTEXT" | jq -r '.link.name      // .link.slug // ""')
+  SCOPE_ID=$(echo "$CONTEXT"  | jq -r '.link.scope.id  // .tags.scope_id // ""')
+  SCOPE_NRN=$(echo "$CONTEXT" | jq -r '.link.scope.nrn // ""')
+  SCOPE_SLUG=$(echo "$CONTEXT" | jq -r '.link.scope.slug // .tags.scope // ""')
+  APP_SLUG=$(echo "$CONTEXT"  | jq -r '.link.entity.slug // .tags.application // ""')
+  APP_NRN=$(echo "$CONTEXT"   | jq -r '.link.entity.nrn  // ""')
+
+  LINK_ATTRS=$(echo "$CONTEXT" | jq -c '(.link.attributes // {}) * (.parameters // {})')
+
+  LINK_ACCESS_LEVEL=$(echo "$LINK_ATTRS"   | jq -r '.accessLevel     // "read-write"')
+  LINK_CONTAINER_NAME=$(echo "$LINK_ATTRS" | jq -r '.container_name  // ""')
+  LINK_SAS_TTL_DAYS=$(echo "$LINK_ATTRS"   | jq -r '.sas_ttl_days    // 90')
+
+  if [[ ! "$LINK_ACCESS_LEVEL" =~ ^(read|write|read-write)$ ]]; then
+    echo "ERROR: invalid accessLevel '${LINK_ACCESS_LEVEL}' (expected read, write or read-write)" >&2
+    exit 1
+  fi
+
+  if [[ ! "$LINK_SAS_TTL_DAYS" =~ ^[0-9]+$ ]] || [ "$LINK_SAS_TTL_DAYS" -lt 1 ] || [ "$LINK_SAS_TTL_DAYS" -gt 365 ]; then
+    echo "ERROR: invalid sas_ttl_days '${LINK_SAS_TTL_DAYS}' (expected an integer between 1 and 365)" >&2
+    exit 1
+  fi
+
+  export LINK_ID LINK_NAME SCOPE_ID SCOPE_NRN SCOPE_SLUG APP_SLUG APP_NRN
+  export LINK_ACCESS_LEVEL LINK_CONTAINER_NAME LINK_SAS_TTL_DAYS
+fi

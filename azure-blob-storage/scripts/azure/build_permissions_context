@@ -1,0 +1,177 @@
+#!/bin/bash
+set -euo pipefail
+
+# ---------------------------------------------------------------------------
+# build_permissions_context — Prepares the Terraform execution environment
+# for link actions (link / link-update / unlink). Runs AFTER build_context,
+# which has already set CONTEXT, VALUES, SERVICE_PATH, TFSTATE_*, and the
+# LINK_* variables.
+#
+# The target Storage Account is read from the SERVICE attributes, which
+# write_service_outputs populated after create. No credential is read or
+# passed: the permissions module obtains the connection string itself from
+# data.azurerm_storage_account.
+# ---------------------------------------------------------------------------
+
+# IMPORTANT: this script has its own yaml_value(). Shell functions do NOT
+# carry over between workflow steps; each step is a separate execution.
+yaml_value() {
+  local key="$1" default="$2" file="$3"
+  local raw val
+  raw=$(grep "^${key}:" "$file" 2>/dev/null | head -1) || true
+  if [ -z "$raw" ]; then
+    echo "$default"
+    return 0
+  fi
+
+  val="${raw#*:}"
+  # Trim leading whitespace.
+  val="${val#"${val%%[![:space:]]*}"}"
+
+  # A quoted value ends at its closing quote; anything after it (typically an
+  # inline comment) is not part of the value. An unquoted value ends at the
+  # first "#".
+  #
+  # The previous version stripped only a leading and a trailing quote, so
+  #   tfstate_resource_group: ""   # empty = resource_group_name
+  # came back as the non-empty string '"   # empty = resource_group_name',
+  # which then beat every other resolution tier and was written verbatim into
+  # backend.hcl. HCL read it as an empty string plus a comment, and tofu hung
+  # resolving a storage account with no resource group.
+  case "$val" in
+    '"'*) val="${val#\"}"; val="${val%%\"*}" ;;
+    "'"*) val="${val#\'}"; val="${val%%\'*}" ;;
+    *)
+      val="${val%%#*}"
+      val="${val%"${val##*[![:space:]]}"}"
+      ;;
+  esac
+
+  echo "${val:-$default}"
+}
+
+if [ -z "${LINK_ID:-}" ]; then
+  echo "ERROR: LINK_ID is not set. Expected to be exported by build_context." >&2
+  exit 1
+fi
+
+if [ -z "${TFSTATE_STORAGE_ACCOUNT:-}" ] || [ -z "${TFSTATE_CONTAINER:-}" ]; then
+  echo "ERROR: TFSTATE_STORAGE_ACCOUNT and TFSTATE_CONTAINER must be exported by build_context." >&2
+  exit 1
+fi
+
+ACTION_TYPE=$(echo "$CONTEXT" | jq -r '.type // ""')
+SERVICE_ID=$(echo "$CONTEXT" | jq -r '.service.id')
+
+# --- Target Storage Account (from service attributes) ----------------------
+
+SERVICE_ATTRS=$(echo "$CONTEXT" | jq -c '.service.attributes // {}')
+
+TARGET_ACCOUNT=$(echo "$SERVICE_ATTRS" | jq -r '.account_name         // ""')
+TARGET_RG=$(echo "$SERVICE_ATTRS"      | jq -r '.resource_group_name  // ""')
+
+# Fall back to values.yaml for the resource group: an older service instance
+# may predate the resource_group_name attribute.
+if [ -z "$TARGET_RG" ] && [ -n "${VALUES:-}" ] && [ -f "$VALUES" ]; then
+  TARGET_RG=$(yaml_value "resource_group_name" "" "$VALUES")
+fi
+
+CONTAINER_NAME="${LINK_CONTAINER_NAME:-}"
+
+# --- Unlink on a link that never completed ---------------------------------
+# There is no container to destroy, and no state to speak of. Exiting 0 keeps
+# the platform from stranding the link in a failed delete.
+
+if [ -z "$CONTAINER_NAME" ]; then
+  if [ "$ACTION_TYPE" = "delete" ]; then
+    echo "WARNING: unlink with no container_name — the link was never fully created. Nothing to destroy."
+    # CRITICAL: this exits BEFORE the Terraform execution environment below is
+    # overridden. Without NP_SKIP_TOFU, the next step (do_tofu, TOFU_ACTION=
+    # destroy) would inherit OUTPUT_DIR/TOFU_MODULE_DIR/TOFU_INIT_VARIABLES/
+    # TOFU_VARIABLES from build_context two steps ago — the deployment/ module
+    # and key=deployment.tfstate — and run "tofu destroy" against the Storage
+    # Account and every other link's container. NP_SKIP_TOFU tells do_tofu and
+    # write_link_outputs to no-op instead. TOFU_MODULE_DIR is also blanked out
+    # here as defence in depth: even if NP_SKIP_TOFU were somehow lost, an
+    # empty TOFU_MODULE_DIR makes do_tofu's own directory-existence check
+    # refuse to run rather than fall back to the inherited deployment/ path.
+    export NP_SKIP_TOFU=true
+    export TOFU_MODULE_DIR=""
+    exit 0
+  fi
+  echo "ERROR: container_name is required to create a link" >&2
+  exit 1
+fi
+
+if [ -z "$TARGET_ACCOUNT" ]; then
+  echo "ERROR: account_name not found in the service attributes." >&2
+  echo "       The service's create action has not completed successfully — check that" >&2
+  echo "       write_service_outputs ran and patched the service attributes." >&2
+  exit 1
+fi
+
+if [ -z "$TARGET_RG" ]; then
+  echo "ERROR: resource_group_name not found in the service attributes or values.yaml." >&2
+  exit 1
+fi
+
+# --- Validate the container name against Azure's actual rules --------------
+# 3-63 chars, lowercase letters, digits and single hyphens, starting and
+# ending with a letter or digit. Bash regex has no lookahead, so the
+# no-consecutive-hyphens rule is expressed as "(char | -char)*".
+
+if [ "${#CONTAINER_NAME}" -lt 3 ] || [ "${#CONTAINER_NAME}" -gt 63 ]; then
+  echo "ERROR: invalid container_name '${CONTAINER_NAME}' (must be 3-63 characters)" >&2
+  exit 1
+fi
+
+if [[ ! "$CONTAINER_NAME" =~ ^[a-z0-9]([a-z0-9]|-[a-z0-9])*$ ]]; then
+  echo "ERROR: invalid container_name '${CONTAINER_NAME}'" >&2
+  echo "       Azure allows lowercase letters, digits and single hyphens; it must start" >&2
+  echo "       and end with a letter or digit, and cannot contain consecutive hyphens." >&2
+  exit 1
+fi
+
+echo "Link ${LINK_ID}: container=${CONTAINER_NAME} account=${TARGET_ACCOUNT} access=${LINK_ACCESS_LEVEL:-read-write}"
+
+# --- Terraform execution environment ---------------------------------------
+# Override OUTPUT_DIR so each link has an isolated workspace, and put the
+# link's state under its own key inside the service's tfstate container.
+
+OUTPUT_DIR="/tmp/np-link-${LINK_ID}"
+mkdir -p "$OUTPUT_DIR"
+
+TOFU_MODULE_DIR="$SERVICE_PATH/permissions"
+
+# use_azuread_auth=true: the azurerm backend defaults to shared-key auth and
+# resolves the account key via ARM listKeys, which the README's documented
+# Storage Blob Data Contributor role does not grant on the tfstate account.
+# This makes the backend actually authenticate the way the README describes.
+# A file, not a flag string — see the note in build_context.
+cat > "${OUTPUT_DIR}/backend.hcl" <<EOF
+resource_group_name  = "${TFSTATE_RESOURCE_GROUP}"
+storage_account_name = "${TFSTATE_STORAGE_ACCOUNT}"
+container_name       = "${TFSTATE_CONTAINER}"
+key                  = "azure-blob-storage/${SERVICE_ID}/links/${LINK_ID}.tfstate"
+use_azuread_auth     = true
+EOF
+
+TOFU_INIT_VARIABLES=""
+
+TOFU_VARIABLES=$(jq -nc \
+  --arg     link_id              "$LINK_ID" \
+  --arg     storage_account_name "$TARGET_ACCOUNT" \
+  --arg     resource_group_name  "$TARGET_RG" \
+  --arg     container_name       "$CONTAINER_NAME" \
+  --arg     access_level         "${LINK_ACCESS_LEVEL:-read-write}" \
+  --argjson sas_ttl_days         "${LINK_SAS_TTL_DAYS:-90}" \
+  '{
+    link_id:              $link_id,
+    storage_account_name: $storage_account_name,
+    resource_group_name:  $resource_group_name,
+    container_name:       $container_name,
+    access_level:         $access_level,
+    sas_ttl_days:         $sas_ttl_days
+  }')
+
+export OUTPUT_DIR TOFU_MODULE_DIR TOFU_INIT_VARIABLES TOFU_VARIABLES
