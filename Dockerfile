@@ -13,7 +13,7 @@
 # writes a per-service key into a container that already exists). Nothing
 # under scripts/azure/ shells out to `az`. bash, jq, np, curl and base64 ship
 # in the base.
-FROM public.ecr.aws/nullplatform/scopes/worker-bridge:1.0.0
+FROM public.ecr.aws/nullplatform/scopes/worker-bridge:1.1.1
 
 # OpenTofu, pinned. Baking it here is the whole point of the OCI model: on the
 # git-clone path do_tofu curls a release tarball into /tmp on every action,
