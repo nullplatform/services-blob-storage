@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.0](https://github.com/nullplatform/services-blob-storage/compare/v0.1.0...v0.2.0) (2026-09-29)
+
+
+### Features
+
+* export a container-scoped connection string on the link ([a6e947e](https://github.com/nullplatform/services-blob-storage/commit/a6e947e271083a30ac9c44448f4fb3df9ba06f25))
+* export a container-scoped connection string on the link ([663d95e](https://github.com/nullplatform/services-blob-storage/commit/663d95e1769d67cfc3756404b1d28fb8db5578c6))
+
 ## [0.1.0](https://github.com/nullplatform/services-blob-storage/compare/0.0.1...v0.1.0) (2026-09-18)
 
 
