@@ -17,3 +17,13 @@ output "blob_endpoint" {
   description = "Blob service endpoint of the target Storage Account"
   value       = data.azurerm_storage_account.target.primary_blob_endpoint
 }
+
+# The SAS in the form the Azure Storage SDKs take as a connection string
+# (BlobServiceClient / BlobContainerClient from a connection string). The
+# data source returns the token with a leading "?", which a connection string
+# must not carry.
+output "connection_string" {
+  description = "Connection string scoped to this container: the blob endpoint plus the SAS"
+  value       = "BlobEndpoint=${data.azurerm_storage_account.target.primary_blob_endpoint};SharedAccessSignature=${trimprefix(data.azurerm_storage_account_blob_container_sas.link.sas, "?")}"
+  sensitive   = true
+}

@@ -19,7 +19,7 @@
         "container_name": {
           "type": "string",
           "title": "Container Name",
-          "export": true,
+          "export": { "type": "environment_variable", "target": "AZURE_STORAGE_CONTAINER", "secret": false },
           "description": "Blob container created for this link. 3-63 characters, lowercase letters, digits and single hyphens.",
           "pattern": "^[a-z0-9]([a-z0-9]|-(?!-)){1,61}[a-z0-9]$",
           "editableOn": ["create"],
@@ -52,6 +52,15 @@
           "editableOn": [],
           "description": "Shared Access Signature scoped to this container (auto-populated, delivered as a secret env var)",
           "order": 4
+        },
+        "connection_string": {
+          "type": "string",
+          "title": "Connection String",
+          "export": { "type": "environment_variable", "target": "AZURE_STORAGE_CONNECTION_STRING", "secret": true },
+          "visibleOn": ["read"],
+          "editableOn": [],
+          "description": "BlobEndpoint=<endpoint>;SharedAccessSignature=<sas>, the form the Azure Storage SDKs accept as a connection string, scoped to this container (auto-populated, delivered as the secret env var AZURE_STORAGE_CONNECTION_STRING)",
+          "order": 5
         }
       }
     },

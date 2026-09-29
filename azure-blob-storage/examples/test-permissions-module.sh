@@ -54,10 +54,12 @@ assert_eq "present" "$(grep -q 'data "azurerm_storage_account"' "$MODULE/main.tf
 assert_eq "absent" "$(grep -q 'variable "connection_string"\|variable "account_key"' "$MODULE/variables.tf" 2>/dev/null && echo present || echo absent)" "no credential passed in as a variable"
 
 echo "== outputs write_link_outputs depends on =="
-for o in container_name sas_token blob_endpoint; do
+for o in container_name sas_token connection_string blob_endpoint; do
   assert_eq "present" "$(grep -q "output \"$o\"" "$MODULE/outputs.tf" 2>/dev/null && echo present || echo absent)" "output $o declared"
 done
 assert_eq "present" "$(grep -A3 'output "sas_token"' "$MODULE/outputs.tf" 2>/dev/null | grep -q 'sensitive *= *true' && echo present || echo absent)" "sas_token marked sensitive"
+assert_eq "present" "$(grep -A3 'output "connection_string"' "$MODULE/outputs.tf" 2>/dev/null | grep -q 'sensitive *= *true' && echo present || echo absent)" "connection_string marked sensitive"
+assert_eq "present" "$(grep -q 'trimprefix(.*sas, "?")' "$MODULE/outputs.tf" 2>/dev/null && echo present || echo absent)" "connection string strips the leading ? of the SAS"
 
 echo "== backend is static and azurerm =="
 assert_eq "present" "$(grep -q 'backend "azurerm"' "$MODULE/backend.tf" 2>/dev/null && echo present || echo absent)" "azurerm backend in backend.tf"
