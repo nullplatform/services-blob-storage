@@ -32,7 +32,7 @@ jobs:
   release:
     uses: nullplatform/actions-nullplatform/.github/workflows/release-publish-oci.yml@v1
     with:
-      image_name: services/azure-blob-storage
+      image_name: agent-plugins/services/azure-blob-storage
       existing_tag: ${{ inputs.existing_tag || '' }}
     secrets:
       aws_role_arn: ${{ secrets.AWS_ROLE_ARN_ECR_PUSH }}
