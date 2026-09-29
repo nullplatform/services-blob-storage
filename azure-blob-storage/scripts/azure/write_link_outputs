@@ -5,11 +5,13 @@ set -euo pipefail
 # write_link_outputs — Reads Terraform outputs from the permissions module
 # and writes them to the nullplatform link attributes.
 #
-# container_name is exported plainly; sas_token is exported with
-# export: {secret: true}, so nullplatform stores it encrypted, returns null
-# for it from the API, and injects it into the app at runtime.
+# container_name is exported plainly (as AZURE_STORAGE_CONTAINER); sas_token
+# and connection_string are exported with export: {secret: true}, so
+# nullplatform stores them encrypted, returns null for them from the API, and
+# injects them into the app at runtime (connection_string as
+# AZURE_STORAGE_CONNECTION_STRING).
 #
-# Only these two attributes are patched. account_name and
+# Only these three attributes are patched. account_name and
 # primary_blob_endpoint belong to the SERVICE spec: service and link
 # attributes share a single env-var namespace per link
 # ({LINK_SLUG}_{ATTRIBUTE}), so patching them here too would collide.
@@ -59,28 +61,36 @@ fi
 
 CONTAINER_NAME=$(printf '%s' "$TOFU_OUTPUT_JSON" | jq -r '.container_name.value // ""')
 SAS_TOKEN=$(printf '%s' "$TOFU_OUTPUT_JSON" | jq -r '.sas_token.value // ""')
+CONNECTION_STRING=$(printf '%s' "$TOFU_OUTPUT_JSON" | jq -r '.connection_string.value // ""')
 
 if [ -z "$CONTAINER_NAME" ]; then
   echo "WARNING: no container_name output found. Skipping link attribute update."
   exit 0
 fi
 
-if [ -z "$SAS_TOKEN" ]; then
-  echo "WARNING: sas_token output was empty; patching container_name only."
-  ATTRS=$(jq -nc --arg container_name "$CONTAINER_NAME" '{container_name: $container_name}')
-else
-  ATTRS=$(jq -nc \
-    --arg container_name "$CONTAINER_NAME" \
-    --arg sas_token      "$SAS_TOKEN" \
-    '{
-      container_name: $container_name,
-      sas_token:      $sas_token
-    }')
+# container_name is the load-bearing attribute: build_permissions_context
+# reads it back on every later action, so it is always patched once present.
+# The two credentials are patched only when present, rather than overwriting a
+# previously-good value with an empty string.
+EMPTY_OUTPUTS=""
+[ -z "$SAS_TOKEN" ]         && EMPTY_OUTPUTS="$EMPTY_OUTPUTS sas_token"
+[ -z "$CONNECTION_STRING" ] && EMPTY_OUTPUTS="$EMPTY_OUTPUTS connection_string"
+if [ -n "$EMPTY_OUTPUTS" ]; then
+  echo "WARNING: the following outputs were empty and will not be patched:${EMPTY_OUTPUTS}"
 fi
 
+ATTRS=$(jq -nc \
+  --arg container_name    "$CONTAINER_NAME" \
+  --arg sas_token         "$SAS_TOKEN" \
+  --arg connection_string "$CONNECTION_STRING" \
+  '{container_name: $container_name}
+   + (if $sas_token         != "" then {sas_token: $sas_token}                 else {} end)
+   + (if $connection_string != "" then {connection_string: $connection_string} else {} end)')
+
 echo "Updating link ${LINK_ID_VAL} attributes:"
-echo "  container_name: ${CONTAINER_NAME}"
-echo "  sas_token:      ****"
+echo "  container_name:    ${CONTAINER_NAME}"
+echo "  sas_token:         ****"
+echo "  connection_string: ****"
 
 np link patch --id "$LINK_ID_VAL" --body "{\"attributes\": $ATTRS}"
 echo "Link attributes updated successfully."

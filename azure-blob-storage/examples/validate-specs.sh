@@ -58,12 +58,19 @@ assert_eq "null" "$(jq -r '.attributes.schema.properties.min_tls_version' "$SERV
 assert_eq "null" "$(jq -r '.attributes.schema.properties.https_only' "$SERVICE_SPEC" 2>/dev/null)" "https_only absent from schema"
 
 echo "== link attributes =="
-for a in container_name accessLevel sas_ttl_days sas_token; do
+for a in container_name accessLevel sas_ttl_days sas_token connection_string; do
   assert_eq "present" "$(jq -e --arg a "$a" '.attributes.schema.properties[$a]' "$LINK_SPEC" >/dev/null 2>&1 && echo present || echo missing)" "link attribute $a"
 done
 assert_eq "read-write" "$(jq -r '.attributes.schema.properties.accessLevel.default' "$LINK_SPEC" 2>/dev/null)" "accessLevel default"
 assert_eq "read,write,read-write" "$(jq -r '.attributes.schema.properties.accessLevel.enum | join(",")' "$LINK_SPEC" 2>/dev/null)" "accessLevel enum"
 assert_eq "true" "$(jq -r '.attributes.schema.properties.sas_token.export.secret' "$LINK_SPEC" 2>/dev/null)" "sas_token exported as secret"
+
+echo "== the link lands on the fixed AZURE_STORAGE_* names the Azure SDKs and apps read =="
+assert_eq "AZURE_STORAGE_CONTAINER"         "$(jq -r '.attributes.schema.properties.container_name.export.target' "$LINK_SPEC" 2>/dev/null)" "container_name -> AZURE_STORAGE_CONTAINER"
+assert_eq "AZURE_STORAGE_CONNECTION_STRING" "$(jq -r '.attributes.schema.properties.connection_string.export.target' "$LINK_SPEC" 2>/dev/null)" "connection_string -> AZURE_STORAGE_CONNECTION_STRING"
+assert_eq "true"  "$(jq -r '.attributes.schema.properties.connection_string.export.secret' "$LINK_SPEC" 2>/dev/null)" "connection_string exported as secret"
+assert_eq "false" "$(jq -r '.attributes.schema.properties.container_name.export.secret' "$LINK_SPEC" 2>/dev/null)" "container_name is not a secret"
+assert_eq "0" "$(jq -r '.attributes.schema.properties.connection_string.editableOn | length' "$LINK_SPEC" 2>/dev/null)" "connection_string is not editable"
 assert_eq "container_name" "$(jq -r '.attributes.schema.required | join(",")' "$LINK_SPEC" 2>/dev/null)" "container_name is required"
 
 echo "== the link must not re-export service attributes =="

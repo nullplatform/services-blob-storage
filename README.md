@@ -14,8 +14,9 @@ the repo open for future Azure storage services.
   replication, access tier, blob versioning, soft-delete windows)
 - Creates a blob container per link and issues a SAS scoped to that container,
   with permissions derived from the link's access level
-- Exposes `{LINK}_CONTAINER_NAME` / `{LINK}_SAS_TOKEN` per link, plus
-  `{LINK}_ACCOUNT_NAME` / `{LINK}_PRIMARY_BLOB_ENDPOINT` from the service
+- Exposes `AZURE_STORAGE_CONNECTION_STRING` / `AZURE_STORAGE_CONTAINER` per
+  link (plus `{LINK}_SAS_TOKEN`), and `{LINK}_ACCOUNT_NAME` /
+  `{LINK}_PRIMARY_BLOB_ENDPOINT` from the service
 - Stores OpenTofu state in a shared container under a per-service key
   (`azure-blob-storage/<service_id>/`), authenticating with Azure AD
   (`use_azuread_auth=true`) rather than the account's shared key
@@ -95,20 +96,28 @@ they are read back by the permissions module during link actions.
 
 ## Link Attributes (per link, exported as env vars)
 
-Only the container and its credential are exposed at the link level; account
+Only the container and its credentials are exposed at the link level; account
 identity comes from the service attributes above, to avoid duplicate env vars
 in linked apps.
 
-| Attribute | Env Var Type | Description |
-|---|---|---|
-| `container_name` | plain | The link's blob container |
-| `sas_token` | secret | SAS scoped to that container |
+| Attribute | Env var | Type | Description |
+|---|---|---|---|
+| `container_name` | `AZURE_STORAGE_CONTAINER` | plain | The link's blob container |
+| `connection_string` | `AZURE_STORAGE_CONNECTION_STRING` | secret | `BlobEndpoint=<endpoint>;SharedAccessSignature=<sas>`, what the Azure Storage SDKs take as a connection string, scoped to that container |
+| `sas_token` | `{LINK_SLUG_UPPER}_SAS_TOKEN` | secret | The bare SAS, for clients that build the URL themselves |
 
-Names are `{LINK_SLUG_UPPER}_{ATTRIBUTE_UPPER}` with hyphens **removed** from
-the slug. A link slugged `blob-main` yields `BLOBMAIN_ACCOUNT_NAME`,
-`BLOBMAIN_PRIMARY_BLOB_ENDPOINT`, `BLOBMAIN_CONTAINER_NAME` and
-`BLOBMAIN_SAS_TOKEN`. With those four the container URL is
-`${ENDPOINT}${CONTAINER_NAME}?${SAS_TOKEN}` — no further credentials needed.
+The first two use `export.target` to land on the names the Azure SDKs and most
+applications already read (`BlobServiceClient.fromConnectionString(...)` plus a
+container name), so a linked app needs no mapping. The consequence is that
+**one scope can consume one link of this service**: two links to two accounts
+would both try to export `AZURE_STORAGE_CONNECTION_STRING`.
+
+The rest follow the `{LINK_SLUG_UPPER}_{ATTRIBUTE_UPPER}` convention with
+hyphens **removed** from the slug. A link slugged `blob-main` yields
+`BLOBMAIN_ACCOUNT_NAME`, `BLOBMAIN_PRIMARY_BLOB_ENDPOINT` and
+`BLOBMAIN_SAS_TOKEN`; with those and `AZURE_STORAGE_CONTAINER` the container
+URL is `${ENDPOINT}${CONTAINER_NAME}?${SAS_TOKEN}` — no further credentials
+needed.
 
 ## Workflows
 
