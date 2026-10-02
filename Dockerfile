@@ -22,7 +22,7 @@ FROM public.ecr.aws/nullplatform/scopes/worker-bridge:2.0.1
 #
 # Keep TOFU_VERSION in sync with .github/workflows/terraform.yml and with
 # do_tofu's fallback — see HANDOFF.md § "Versiones de OpenTofu".
-ARG TOFU_VERSION=1.10.10
+ARG TOFU_VERSION=1.13.1
 
 # TARGETARCH is a BuildKit built-in and is EMPTY under the legacy builder, which
 # is what a plain `docker build` uses when buildx is not installed. Falling back
