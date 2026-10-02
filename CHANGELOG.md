@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.3](https://github.com/nullplatform/services-blob-storage/compare/v0.2.2...v0.2.3) (2026-10-02)
+
+
+### Bug Fixes
+
+* **deps:** bump opentofu/setup-opentofu from 1 to 2 ([#9](https://github.com/nullplatform/services-blob-storage/issues/9)) ([8f8076a](https://github.com/nullplatform/services-blob-storage/commit/8f8076a040c48ac9cba3dc2cc2c370be02e22554))
+
 ## [0.2.2](https://github.com/nullplatform/services-blob-storage/compare/v0.2.1...v0.2.2) (2026-10-02)
 
 
