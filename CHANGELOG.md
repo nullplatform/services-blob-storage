@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.3.0](https://github.com/nullplatform/services-blob-storage/compare/v0.2.3...v0.3.0) (2026-10-06)
+
+
+### Features
+
+* run the worker image as a non-root user ([20fb557](https://github.com/nullplatform/services-blob-storage/commit/20fb5572acbab85d4708e0ff007ffd5dba332954))
+* run the worker image as a non-root user ([2c40875](https://github.com/nullplatform/services-blob-storage/commit/2c408756b3a853801cedb4e7aff3a3da76f13f27))
+
+
+### Bug Fixes
+
+* hand HOME to the runtime user ([cd4cff6](https://github.com/nullplatform/services-blob-storage/commit/cd4cff632c6494fc823f22a6dc2ea6b4bbe17240))
+
 ## [0.2.3](https://github.com/nullplatform/services-blob-storage/compare/v0.2.2...v0.2.3) (2026-10-02)
 
 
