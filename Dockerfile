@@ -51,7 +51,17 @@ RUN set -eu; \
 # Bake the service in and point the bridge at its entrypoint + service path.
 # NP_SERVICE_PATH must match the `entrypoint` passed to the
 # service_definition_agent_association module — see HANDOFF.md.
-COPY . /app/pkg
+# Bake the service in. --chown so the files belong to the uid this image runs
+# as: `np` chmods the action script in place at runtime, and a root-owned tree
+# would be read-only for the non-root user.
+COPY --chown=10001:10001 . /app/pkg
 ENV NP_PACKAGE_NAME=azure-blob-storage \
     NP_SERVICE_PATH=/app/pkg/azure-blob-storage \
     NP_SCOPE_ENTRYPOINT=/app/pkg/azure-blob-storage/entrypoint/entrypoint
+
+# Drop root for the runtime. Everything above installs as root, as usual; the
+# base (worker-bridge 2.0.0+) ships the app user, np on PATH and a writable
+# HOME, and leaves the switch to each image. Numeric on purpose: k8s
+# admission with runAsNonRoot resolves USER to a numeric id to prove it
+# isn't root, and a name doesn't satisfy that check.
+USER 10001:10001

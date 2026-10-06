@@ -1,11 +1,5 @@
 # Trivy misconfiguration suppressions for this repo (intentional, documented).
 
-# AVD-DS-0002 — the worker image builds on the shared worker-bridge base,
-# which runs as root by design today (same as aws-s3-bucket): the runtime user
-# is governed by the agent's worker pod securityContext, not by a USER
-# directive here. Revisit when the bridge ships a non-root variant.
-AVD-DS-0002
-
 # AVD-AZU-0012 — the storage account's network rule uses
 # default_action = "Allow" (bypass: AzureServices) on purpose. Linked
 # applications reach the blob endpoint over the public internet and authorise
