@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.1](https://github.com/nullplatform/services-blob-storage/compare/v0.3.0...v0.3.1) (2026-10-16)
+
+
+### Bug Fixes
+
+* **deps:** bump nullplatform/scopes/worker-bridge from 2.0.1 to 2.0.3 ([#25](https://github.com/nullplatform/services-blob-storage/issues/25)) ([e10ff37](https://github.com/nullplatform/services-blob-storage/commit/e10ff373aa2b32a45d2b9e3fa3554d763286b416))
+
 ## [0.3.0](https://github.com/nullplatform/services-blob-storage/compare/v0.2.3...v0.3.0) (2026-10-06)
 
 
