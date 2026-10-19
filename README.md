@@ -215,7 +215,7 @@ package's worker starts with none of it.
 
 ```hcl
 module "service_definition_azure_blob_storage" {
-  source              = "git::https://github.com/nullplatform/tofu-modules.git//nullplatform/service_definition?ref=v7.3.0"
+  source              = "git::https://github.com/nullplatform/tofu-modules.git//nullplatform/service_definition?ref=v8.7.0"
   nrn                 = var.nrn
   service_path        = "azure-blob-storage"
   service_name        = "Azure Blob Storage"
@@ -249,9 +249,8 @@ revision they were created with.
 
 ```hcl
 module "service_agent_association_azure_blob_storage" {
-  source                     = "git::https://github.com/nullplatform/tofu-modules.git//nullplatform/service_definition_agent_association?ref=v7.3.0"
+  source                     = "git::https://github.com/nullplatform/tofu-modules.git//nullplatform/service_definition_agent_association?ref=v8.7.0"
   nrn                        = var.nrn
-  api_key                    = var.np_api_key
   service_path               = "azure-blob-storage"
   service_specification_slug = module.service_definition_azure_blob_storage.service_specification_slug
   tags_selectors             = var.tags_selectors
@@ -260,6 +259,11 @@ module "service_agent_association_azure_blob_storage" {
   package_slug        = module.service_definition_azure_blob_storage.service_specification_slug
 }
 ```
+
+The association takes no `api_key` (tofu-modules v8.6.0 or later): nullplatform
+creates and manages the channel's credential, scoped to dispatching commands to
+agents. The identity running the apply must be able to assign the
+`controlplane:agent-dispatcher` role (`admin`, `ops` or `secops`).
 
 A ready-made version of pieces 2 and 3 lives in
 [`azure-blob-storage/specs/install/azure/`](azure-blob-storage/specs/install/azure)
