@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.5](https://github.com/nullplatform/services-blob-storage/compare/v0.3.4...v0.3.5) (2026-11-16)
+
+
+### Bug Fixes
+
+* **deps:** update dependency opentofu/opentofu to v1.13.9 ([#35](https://github.com/nullplatform/services-blob-storage/issues/35)) ([af867ca](https://github.com/nullplatform/services-blob-storage/commit/af867ca294414da88f10fbca57b5fc375936ae39))
+
 ## [0.3.4](https://github.com/nullplatform/services-blob-storage/compare/v0.3.3...v0.3.4) (2026-11-02)
 
 
