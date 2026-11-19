@@ -31,8 +31,8 @@ the repo open for future Azure storage services.
 ├── azure-blob-storage/
 │   ├── specs/
 │   │   ├── service-spec.json.tpl   # Service schema (attributes the user sees)
-│   │   ├── links/connect.json.tpl  # Link schema (container, access level, SAS)
-│   │   └── install/azure/          # OpenTofu: standalone registration module
+│   │   └── links/connect.json.tpl  # Link schema (container, access level, SAS)
+│   ├── publish/                    # publishes the service as a package (release workflow only)
 │   ├── deployment/                 # OpenTofu module: the Storage Account
 │   ├── permissions/                # OpenTofu module: container + SAS (per link)
 │   ├── workflows/azure/            # Workflow YAMLs (create/update/delete/link/link-update/unlink/read)
@@ -138,7 +138,7 @@ needed.
 - An agent with worker orchestration enabled, and this service's package slug
   listed in the agent module's `worker_orchestrated_packages`
 - The agent's worker needs the Azure environment (`ARM_*`, `RESOURCE_GROUP`,
-  `AZURE_TFSTATE_*`); see "How to register" below
+  `AZURE_TFSTATE_*`); see [Install in your organization](#install-in-your-organization) below
 - A Storage Account with an **existing** blob container for OpenTofu state.
   This service never creates one: it writes a per-service key into a container
   that already exists
@@ -170,20 +170,31 @@ roles above directly instead.
 - `bash`, `jq`, `np` and `curl` ship in the `worker-bridge` base image.
 - **No `azure-cli`**: nothing under `scripts/azure/` shells out to `az`.
 
-## How to register this service in nullplatform
+## Install in your organization
 
-Three pieces, in three layers.
+The service is published once as the package `np-azure-blob-storage` (specification "Azure Blob Storage"), visible to every organization. You do not copy its specs: you install the package and use it read-only.
 
-**1 — The agent** must be able to run the worker and give it the Azure
-environment. In the [`nullplatform/agent`](https://github.com/nullplatform/tofu-modules/tree/main/nullplatform/agent)
-module:
+How installing a package works, how it coexists with a copy you registered, how to upgrade, and when to fork instead are in the [package installation guide](https://docs.nullplatform.com/docs/packages/install); this section has what is specific to this service.
+
+Already registered a copy from the former `azure-blob-storage/specs/install`? It keeps working: it called tofu-modules' `service_definition` on specs that stay in every release, and the package installs next to it, as the guide explains. If you sourced that directory as a module, pin its `?ref` to a release that still has it.
+
+Installing it touches two layers: the agent, which runs the worker with the Azure environment, and the nullplatform layer. There is no infrastructure module: grant the roles in [Requirements](#requirements) directly.
+
+| Layer | What | Module |
+|---|---|---|
+| agent (Helm) | The package in `worker_orchestrated_packages`, and the Azure environment its worker reads | tofu-modules' [`nullplatform/agent`](https://github.com/nullplatform/tofu-modules/tree/main/nullplatform/agent) |
+| nullplatform (nullplatform API key) | The installation of the package and the agent channel | tofu-modules' `service_package_installation` |
+
+Pick ONE release of this repository (the latest is on its [releases page](https://github.com/nullplatform/services-blob-storage/releases)) and install its version.
 
 ```hcl
-  worker_orchestrated_packages = ["azure-blob-storage"]
+# ── agent ────────────────────────────────────────────────────────────
+# In tofu-modules' nullplatform/agent:
+  worker_orchestrated_packages = ["np-azure-blob-storage"]
 
   worker = {
     patches = [{
-      target = { package = "azure-blob-storage" }
+      target = { package = "np-azure-blob-storage" }
       merge = {
         spec = {
           containers = [{
@@ -205,65 +216,33 @@ module:
     ARM_TENANT_ID                 = var.azure_tenant_id
     ARM_SUBSCRIPTION_ID           = var.azure_subscription_id
   }
+
+# ── nullplatform layer ───────────────────────────────────────────────
+# For a service the installation is the whole nullplatform side, channel included.
+module "azure_blob_storage" {
+  source = "git::https://github.com/nullplatform/tofu-modules.git//nullplatform/service_package_installation?ref=v9.16.0"
+
+  nrn                  = var.nrn
+  package_slug         = "np-azure-blob-storage"
+  package_version      = "X.Y.Z" # the same release, without the v
+  agent_tags_selectors = { cluster = "runtime" } # must match the agent's TAGS
+}
+# Keeping channels in a separate bindings layer instead? Use
+# nullplatform/package_installation here and service_definition_agent_association
+# there, with package_slug = "np-azure-blob-storage".
 ```
 
 The `envFrom` is required. Since tofu-modules v7.3.0 the module injects the
 Azure environment only into the `containers` package's worker, so any other
 package's worker starts with none of it.
 
-**2 — The service specification**, with the worker image pinned by digest:
+To upgrade, move `package_version` to the new release. See tofu-modules' [`service_package_installation`](https://github.com/nullplatform/tofu-modules/tree/main/nullplatform/service_package_installation) for its inputs and outputs.
 
-```hcl
-module "service_definition_azure_blob_storage" {
-  source              = "git::https://github.com/nullplatform/tofu-modules.git//nullplatform/service_definition?ref=v7.3.0"
-  nrn                 = var.nrn
-  service_path        = "azure-blob-storage"
-  service_name        = "Azure Blob Storage"
-  repository_name     = "services-blob-storage"
-  repository_branch   = "<tag>"
-  repository_ref_type = "tags"
-  available_links     = ["connect"]
+Prerequisites: an agent whose `TAGS` match the channel's `tags_selectors` and with `public.ecr.aws/nullplatform/*` in `worker.allowedRegistries`; the rest is in [Requirements](#requirements).
 
-  package = {
-    version = "<semver>"
-    slug    = "azure-blob-storage"
-    artifacts = [{
-      name = "AzureBlobStorage"
-      type = "oci_image"
-      meta = {
-        registry   = "public.ecr.aws"
-        repository = "nullplatform/services/azure-blob-storage"
-        digest     = "sha256:..."
-      }
-    }]
-  }
-}
-```
+## How the package is published
 
-The digest comes from the GitHub release the pipeline finalizes. Bump
-`package.version` on every release: a revision published with
-`default = false` is never promoted, and service instances stay on the
-revision they were created with.
-
-**3 — The channel association**, routing the action to the worker:
-
-```hcl
-module "service_agent_association_azure_blob_storage" {
-  source                     = "git::https://github.com/nullplatform/tofu-modules.git//nullplatform/service_definition_agent_association?ref=v7.3.0"
-  nrn                        = var.nrn
-  api_key                    = var.np_api_key
-  service_path               = "azure-blob-storage"
-  service_specification_slug = module.service_definition_azure_blob_storage.service_specification_slug
-  tags_selectors             = var.tags_selectors
-
-  worker_orchestrator = true
-  package_slug        = module.service_definition_azure_blob_storage.service_specification_slug
-}
-```
-
-A ready-made version of pieces 2 and 3 lives in
-[`azure-blob-storage/specs/install/azure/`](azure-blob-storage/specs/install/azure)
-for a standalone install.
+Every release publishes a new revision of the package from this repository, in the same run that pushes the worker image ([`.github/workflows/release.yml`](./.github/workflows/release.yml)): the `publish-package` job applies [`azure-blob-storage/publish`](./azure-blob-storage/publish), a stack on tofu-modules' `service_package_publish`, which pins this tag's specs and the image by digest. The package version is the release tag, as for the image. The stack keeps its state where the organization secrets `PACKAGE_STATE_AWS_ACCOUNT_ID`, `PACKAGE_TFSTATE_BUCKET` and `PACKAGE_TFSTATE_REGION` point; the state role is `github-actions-<repository>-package-state` in that account, by convention.
 
 ## Important considerations
 
@@ -343,7 +322,7 @@ the platform. It creates real resources.
 | `shellcheck.yml` | PR | every shell script |
 | `trivy.yml` | PR | Terraform and Dockerfile misconfiguration scan |
 | `conventional-commit.yml`, `branch-validation.yml` | PR | commit and branch naming |
-| `release.yml` | push to `main` | release-please, image build and push to ECR Public, artifact registration |
+| `release.yml` | push to `main` | release-please, image build and push to ECR Public, artifact registration, package publish |
 
 Releases are cut by release-please from conventional commits. Each one builds
 the worker image, pushes it to
