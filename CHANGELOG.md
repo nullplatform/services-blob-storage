@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.4.0](https://github.com/nullplatform/services-blob-storage/compare/v0.3.5...v0.4.0) (2026-11-19)
+
+
+### Features
+
+* **package:** publish the service as a global package ([e25f06f](https://github.com/nullplatform/services-blob-storage/commit/e25f06fbd627d8602aaa9c0da959d917212938b5))
+* **package:** publish the service as a global package ([1112095](https://github.com/nullplatform/services-blob-storage/commit/11120957d8fc0d3544dd2275d066b704464fc86b))
+
 ## [0.3.5](https://github.com/nullplatform/services-blob-storage/compare/v0.3.4...v0.3.5) (2026-11-16)
 
 
